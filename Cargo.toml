@@ -1,0 +1,27 @@
+[package]
+name = "usb-asynchronous-soundcard"
+authors = ["Josef Utbult"]
+edition = "2021"
+version = "0.1.0"
+
+[dependencies]
+
+# USB audio class v1 implementation, with added functionality for
+# synch endpoints
+usbd-audio = { path = "../dependencies/usbd-audio", features = ["async-synchronization"] }
+# usbd-audio = { git = "https://github.com/JosefUtbult/usbd-audio.git", branch = "async", features = ["async-synchronization"] }
+
+# USB device crate with added functionality for enabling synch
+# endpoint definitions in descriptors
+usb-device = { path = "../dependencies/usb-device", features = ["control-buffer-256"] }
+# TODO: Add github link
+
+# Fixed decimal representation, used to report back the synch feedback rate
+fixed = "1.24.0"
+
+[patch.crates-io]
+
+# Applies the patch needed to get synchronization functionality for
+# isochronous endpoints
+usb-device = { path = "../dependencies/usb-device" }
+# usb-device = { git = "https://github.com/JosefUtbult/usb-device.git", branch = "sync-types" }
