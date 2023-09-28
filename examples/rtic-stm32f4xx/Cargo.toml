@@ -1,0 +1,78 @@
+[package]
+name = "rtic-stm32f4xx"
+authors = ["Josef Utbult"]
+edition = "2021"
+version = "0.1.0"
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+defmt = { version = "0.3", features = ["encoding-rzcobs"] }
+defmt-brtt = { version = "0.1", default-features = false, features = ["rtt"] }
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+# RTIC
+rtic = { version = "2.0.0", features = [ "thumbv7-backend" ] }
+
+# STM32F4 HAL
+stm32f4xx-hal = { version = "0.16.0", features = ["stm32f411", "rt", "usb_fs", "i2s"] }
+
+# USB Audio class crate
+usb-asynchronous-soundcard = { "path" = "../../" }
+
+[patch.crates-io]
+
+# Patch to USB packet needed for STM32 based processors. Corrects a
+# bug where only every second frame arrives to the program
+synopsys-usb-otg = { git = "https://github.com/kiffie/synopsys-usb-otg.git", branch = "iso-ep" }
+
+# Applies the patch needed to get synchronization functionality for
+# isochronous endpoints
+usb-device = { path = "../../../dependencies/usb-device" }
+# usb-device = { git = "https://github.com/JosefUtbult/usb-device.git", branch = "sync-types" }
+
+
+# cargo build/run
+[profile.dev]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = "s" # <-
+overflow-checks = true # <-
+
+# cargo test
+[profile.test]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = "s" # <-
+overflow-checks = true # <-
+
+# cargo build/run --release
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = "s" # <-
+overflow-checks = false # <-
+
+# cargo test --release
+[profile.bench]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = "s" # <-
+overflow-checks = false # <-
+
+# uncomment this to switch from the crates.io version of defmt to its git version
+# check app-template's README for instructions
+# [patch.crates-io]
+# defmt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version reported by `probe-run --version`" }
+# defmt-rtt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version reported by `probe-run --version`" }
+# defmt-test = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version reported by `probe-run --version`" }
+# panic-probe = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version reported by `probe-run --version`" }
