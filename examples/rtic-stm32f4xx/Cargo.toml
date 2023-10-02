@@ -19,6 +19,9 @@ stm32f4xx-hal = { version = "0.16.0", features = ["stm32f411", "rt", "usb_fs", "
 # USB Audio class crate
 usb-asynchronous-soundcard = { "path" = "../../" }
 
+# Heapless queue systems
+heapless = "0.7.16"
+
 [patch.crates-io]
 
 # Patch to USB packet needed for STM32 based processors. Corrects a
@@ -29,7 +32,6 @@ synopsys-usb-otg = { git = "https://github.com/kiffie/synopsys-usb-otg.git", bra
 # isochronous endpoints
 usb-device = { path = "../../../dependencies/usb-device" }
 # usb-device = { git = "https://github.com/JosefUtbult/usb-device.git", branch = "sync-types" }
-
 
 # cargo build/run
 [profile.dev]
