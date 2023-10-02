@@ -3,12 +3,12 @@
 #![feature(type_alias_impl_trait)]
 
 use hal::gpio::{Pin, Output};
-use rtic_stm32f4xx as _; // global logger + panicking-behavior + memory layout
-use stm32f4xx_hal as hal;
+use rtic_stm32h7xx as _; // global logger + panicking-behavior + memory layout
+use stm32h7xx_hal as hal;
 use usb_asynchronous_soundcard::*;
 
 use hal::prelude::*;
-use hal::otg_fs::{UsbBus, USB};
+use hal::usb_hs::{UsbBus, USB1};
 
 use usb_device::device::{
 	UsbDeviceBuilder, 
@@ -37,24 +37,24 @@ const SYNC_RATE: u32 = 512;
 
 /// This is the size allocated to the USB buffer. As this example
 /// utilizes isochronous endpoints, these messages can be up to 1024 bytes
-const USB_BUFFER_SIZE: usize = 1024;
+pub const USB_BUFFER_SIZE: usize = 1024;
 
-/// This part of memory acts as a buffer for the usb device
+// This part of memory acts as a buffer for the usb device
 static mut EP_MEMORY: [u32; USB_BUFFER_SIZE] = [0; USB_BUFFER_SIZE];
 
 /// The USB device defined by the 
 /// [usb-device](https://docs.rs/usb-device/latest/usb_device/) crate
-type UsbDevice = usb_device::prelude::UsbDevice<'static, UsbBus<USB>>;
+type UsbDevice = usb_device::prelude::UsbDevice<'static, UsbBus<USB1>>;
 
 /// The USB device class instance defined by the
 /// [usbd-audio](https://docs.rs/usbd-audio/latest/usbd_audio/) crate
-type UsbAudio = usbd_audio::AudioClass<'static, UsbBus<USB>>;
+type UsbAudio = usbd_audio::AudioClass<'static, UsbBus<USB1>>;
 
 /// A debug pin used for measuring interrupt rate
-type DebugInterruptPin = Pin<'C', 6, Output>;
+type DebugInterruptPin = Pin<'A', 6, Output>;
 
 #[rtic::app(
-    device = stm32f4xx_hal::pac,
+    device = stm32h7xx_hal::pac,
     dispatchers = [EXTI0, EXTI1, EXTI2]
 )]
 
@@ -74,7 +74,7 @@ mod app {
     struct Local {
         usb_device: UsbDevice,
         usb_audio: UsbAudio,
-        timer: hal::timer::CounterHz<hal::pac::TIM2>,
+        timer: hal::timer::Timer<hal::pac::TIM1>,
         debug_pin: DebugInterruptPin
     }
 
@@ -82,44 +82,40 @@ mod app {
     fn init(cx: init::Context) -> (Shared, Local) {
         defmt::info!("init");
 
-        // Setup clocks and freeze them
+        let pwr = cx.device.PWR.constrain();
+        let pwrcfg = pwr.freeze();
+
+        // Setup clocks
         let rcc = cx.device.RCC.constrain();
-        let clocks = rcc
-            .cfgr
-            .use_hse(8u32.MHz())
-            .sysclk(96.MHz())
-            .hclk(96.MHz())
-            .pclk1(50.MHz())
-            .pclk2(100.MHz())
-            .i2s_clk(61440.kHz())
-            .freeze();
+        let mut ccdr = rcc
+            .sys_ck(80.MHz())
+            .freeze(pwrcfg, &cx.device.SYSCFG);
 
-        let gpioa = cx.device.GPIOA.split();
-        let gpioc = cx.device.GPIOC.split();
+        // 48MHz CLOCK
+        let _ = ccdr.clocks.hsi48_ck().expect("HSI48 must run");
+        ccdr.peripheral.kernel_usb_clk_mux(hal::rcc::rec::UsbClkSel::Hsi48);
 
-        // Declare which pins should be used for the USB interface
-        let usb_pins = (
-            gpioa.pa11,     // USB DM
-            gpioa.pa12      // USB DP
-        );
+        // GPIO setup
+        let gpioa = cx.device.GPIOA.split(ccdr.peripheral.GPIOA); 
+        let gpiob = cx.device.GPIOB.split(ccdr.peripheral.GPIOB); 
 
         // Setup a new USB peripheral instance with all its needed
         // pins and clocks and so on
-        let usb = hal::otg_fs::USB::new(
-            (
-                cx.device.OTG_FS_GLOBAL, 
-                cx.device.OTG_FS_DEVICE, 
-                cx.device.OTG_FS_PWRCLK
-            ),
-            usb_pins,
-            &clocks,
+        let usb = USB1::new(
+            cx.device.OTG1_HS_GLOBAL,
+            cx.device.OTG1_HS_DEVICE,
+            cx.device.OTG1_HS_PWRCLK,
+            gpiob.pb14.into_alternate(),     // USB DM
+            gpiob.pb15.into_alternate(),      // USB DP
+            ccdr.peripheral.USB1OTG, 
+            &ccdr.clocks
         );
 
         // Create a new USB bus using the USB peripherals. This USB
         // bus is then applied as a static object, so that it
         // doesn't fall out of scope
         let usb_bus = cortex_m::singleton!(
-            : usb_device::class_prelude::UsbBusAllocator<UsbBus<USB>> =
+            : usb_device::class_prelude::UsbBusAllocator<UsbBus<USB1>> =
                 UsbBus::new(usb, unsafe { &mut EP_MEMORY })
         ).unwrap();
 
@@ -140,7 +136,7 @@ mod app {
 
         // Now create a new USB device with ID numbers and
         // manufacturer info
-        let mut usb_device: usb_device::prelude::UsbDevice<UsbBus<USB>> = 
+        let mut usb_device: usb_device::prelude::UsbDevice<UsbBus<USB1>> = 
             UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x16c0, 0x27dd))
                 .manufacturer("Josef Labs")
                 .product("USB audio test")
@@ -163,35 +159,37 @@ mod app {
                 // If not, that means that the host has read the contents
                 // of the synchronous feedback endpoint. In that case,
                 // repopulate the endpoint with an appropriate rate
-                else {
-                    //Kickstart the sync interrupt
-                    usb_audio.write_sync_rate(&sample_rate_to_buffer(FfCounter::ZERO)).ok();
-                }
             }
-
+            else {
+                //Kickstart the sync interrupt
+                usb_audio.write_sync_rate(&sample_rate_to_buffer(FfCounter::ZERO)).ok();
+            }
         }
 
         // Setup a debug pin that can be read with a logic analyzer.
         // This pin will be triggered every time we get a timer interrupt
-        let debug_pin = gpioc.pc6.into();
+        let debug_pin = gpioa.pa6.into();
 
         // We use a timer to simulate the interrupt from an I2S
         // connected device
-        let mut timer = cx.device.TIM2.counter_hz(&clocks);
-        timer.start(96_000_u32.Hz()).unwrap();
-        timer.listen(hal::timer::Event::Update);
+        let mut timer = cx.device.TIM1.timer(
+            98_000_u32.Hz(),
+            ccdr.peripheral.TIM1,
+            &ccdr.clocks,
+        );
+        timer.listen(hal::timer::Event::TimeOut);
 
         defmt::info!("Starting");
 
         (
             Shared {
-                ff_counter: FfCounter::ZERO
+                ff_counter: FfCounter::ZERO,
             },
             Local {
                 usb_device,
                 usb_audio,
                 timer,
-                debug_pin
+                debug_pin,
             },
         )
     }
@@ -210,23 +208,19 @@ mod app {
     /// Where the exponent `p` in this case is 1
     #[task(
         priority = 3,
-        binds = TIM2,
+        binds = TIM1_UP, 
+        shared = [
+            ff_counter,
+        ],
         local = [
             timer,
-            debug_pin
-        ],
-        shared = [
-            ff_counter
+            debug_pin,
         ]
     )]
     fn timer_tick(mut cx: timer_tick::Context) {
-        cx.local.timer.clear_interrupt(hal::timer::Event::Update);
-        // Toggle the debug pin for measuring rate of the interrupt.
-        // This rate should be 96 kHz
+        cx.local.timer.clear_irq();
         cx.local.debug_pin.toggle();
 
-        // Increment the ff counter by one, which is then used to
-        // measure the rate that samples are consumed
         cx.shared.ff_counter.lock(|ff_counter| {
             if *ff_counter < FfCounter::MAX - FfCounter::ONE {
                 *ff_counter += FfCounter::ONE;
@@ -248,7 +242,7 @@ mod app {
     /// information about the state
     #[task(
         priority = 2,
-        binds = OTG_FS,
+        binds = OTG_HS,
         shared = [
             ff_counter
         ],
@@ -272,7 +266,7 @@ mod app {
                 *cx.local.frame_counter = 0;
 
                 cx.shared.ff_counter.lock(|ff_counter| {
-                    let factor: FfCounter = FfCounter::ONE * SYNC_RATE;
+                    let factor: FfCounter = FfCounter::ONE * SYNC_RATE; 
                     *cx.local.ff = *ff_counter / factor;
                     *ff_counter %= factor;
                 });

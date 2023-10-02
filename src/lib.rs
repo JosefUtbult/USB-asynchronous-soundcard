@@ -14,14 +14,9 @@ pub type FfCounter = fixed::types::U16F16;
 pub fn sample_rate_to_buffer(rate: FfCounter) -> [u8; 3] {
     // Shift value upp by six bytes
     let shifted_rate = rate.unwrapped_shl(6);
-    // let shifted_rate = rate.unwrapped_shl(14);
     // Remove the last byte
     let res = shifted_rate.to_be_bytes();
     [res[0], res[1], res[2]]
-}
-
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
 }
 
 #[cfg(test)]
@@ -29,8 +24,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn test_rate_formating() {
+        let res_buffer = sample_rate_to_buffer(FfCounter::lit("0b0000_0010_0000_0001_1000_0000_0000_0100@-16"));
+        let persumed_buffer = fixed::types::U10F22::lit("0b1000_0000_0110_0000_0000_0001@-14").to_be_bytes();
+        assert_eq!(res_buffer, [persumed_buffer[0], persumed_buffer[1], persumed_buffer[2]]);
     }
 }

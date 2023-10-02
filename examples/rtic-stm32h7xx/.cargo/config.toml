@@ -1,6 +1,6 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 
-runner = "probe-run --chip STM32F411RETx"
+runner = "probe-run --chip STM32H743ZITx"
 rustflags = [
   "-C", "linker=flip-link",
   "-C", "link-arg=-Tlink.x",
@@ -10,3 +10,8 @@ rustflags = [
 
 [build]
 target = "thumbv7em-none-eabihf" # Cortex-M4F and Cortex-M7F (with FPU)
+
+[alias]
+rb = "run --bin"
+rrb = "run --release --bin"
+bbr = "build --release --bin"
