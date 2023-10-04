@@ -40,6 +40,11 @@ use usbd_audio::{
 /// ```R = Fs * 2^(10 - p) = 256 ms```
 const SYNC_RATE: u32 = 256;
 
+/// Sample rate that everything should run at. Note that if this rate
+/// is to high, the blocking time of the USB transmission will cause
+/// the I2S transmission to drop samples
+const SAMPLE_RATE: u32 = 24_000;
+
 /// This is the size allocated to the USB buffer. As this example
 /// utilizes isochronous endpoints, these messages can be up to 1024 bytes
 const USB_BUFFER_SIZE: usize = 1024;
@@ -56,7 +61,8 @@ type UsbDevice = usb_device::prelude::UsbDevice<'static, UsbBus<USB>>;
 type UsbAudio = usbd_audio::AudioClass<'static, UsbBus<USB>>;
 
 /// A debug pin used for measuring interrupt rate
-type DebugInterruptPin = Pin<'C', 8, Output>;
+type USBDebugInterruptPin = Pin<'C', 8, Output>;
+type I2SDebugInterrputPin = Pin<'C', 9, Output>;
 
 #[rtic::app(
     device = stm32f4xx_hal::pac,
@@ -72,10 +78,10 @@ mod app {
     #[shared]
     struct Shared {
         ff_counter: FfCounter,
+        // #[lock_free]
+        // i2s_master_driver: crate::codec::I2sMasterDriver,
         #[lock_free]
-        i2s_master_driver: crate::codec::I2sMasterDriver,
-        #[lock_free]
-        i2s_transmit_driver: crate::codec::I2sTransmitDriver,
+        i2s_driver: crate::codec::I2sDriver,
         #[lock_free]
         exti: EXTI,
     }
@@ -85,8 +91,8 @@ mod app {
     struct Local {
         usb_device: UsbDevice,
         usb_audio: UsbAudio,
-        timer: hal::timer::CounterHz<hal::pac::TIM2>,
-        debug_pin: DebugInterruptPin,
+        usb_debug_pin: USBDebugInterruptPin,
+        i2s_debug_pin: I2SDebugInterrputPin,
         usb_to_codec_producer: heapless::spsc::Producer<'static,codec::QueueType,{codec::QUEUE_SIZE}> ,
         usb_to_codec_consumer: heapless::spsc::Consumer<'static,codec::QueueType,{codec::QUEUE_SIZE}> ,
     }
@@ -162,11 +168,10 @@ mod app {
                 // Signed 16 bit little endian
                 Format::S16le,
                 1,
-                &[12000],
-                // &[48000],
+                &[SAMPLE_RATE],
                 TerminalType::OutSpeaker).unwrap())
             // Here the value of `p` is reported to the USB host
-            .sync(SyncConfig::new(3))
+            .sync(SyncConfig::new(2))
             .build(usb_bus)
             .unwrap();
 
@@ -205,15 +210,11 @@ mod app {
 
         // Setup a debug pin that can be read with a logic analyzer.
         // This pin will be triggered every time we get a timer interrupt
-        let debug_pin = gpioc.pc8.into();
-
-        // We use a timer to simulate the interrupt from an I2S
-        // connected device
-        let mut timer = cx.device.TIM2.counter_hz(&clocks);
-        timer.start(192_000_u32.Hz()).unwrap();
-        timer.listen(hal::timer::Event::Update);
+        let usb_debug_pin = gpioc.pc8.into();
+        let i2s_debug_pin = gpioc.pc9.into();
 
         let codec = codec::Codec {
+            sample_rate: SAMPLE_RATE,
             syscfg: &mut syscfg,
             clocks: &clocks,
             exti: &mut exti,
@@ -223,31 +224,28 @@ mod app {
             rst_pin: &mut gpioa.pa7.into_push_pull_output(),
             i2c_scl: gpiob.pb8,
             i2c_sda: gpiob.pb9,
-            i2s_lrck_master: gpiob.pb12, 
-            i2s_clk_master: gpiob.pb13,
-            i2s_mck_master: gpioc.pc6,
-            i2s_data_master: gpiob.pb15,
-            i2s_lrck_transmit: gpioa.pa4,
-            i2s_clk_transmit: gpioc.pc10,
-            i2s_data_transmit:gpioc.pc12 
+            i2s_mclk: gpioc.pc7,
+            i2s_lrck: gpioa.pa4,
+            i2s_clk: gpioc.pc10,
+            i2s_data:gpioc.pc12 
         };
 
-        let (i2s_master_driver, i2s_transmit_driver) = codec::init(codec);
+        let i2s_driver = codec::init(codec);
 
         defmt::info!("Starting");
 
         (
             Shared {
                 ff_counter: FfCounter::ZERO,
-                i2s_master_driver,
-                i2s_transmit_driver,
+                // i2s_master_driver,
+                i2s_driver,
                 exti
             },
             Local {
                 usb_device,
                 usb_audio,
-                timer,
-                debug_pin,
+                usb_debug_pin,
+                i2s_debug_pin,
                 usb_to_codec_consumer,
                 usb_to_codec_producer
             },
@@ -261,18 +259,27 @@ mod app {
             frame_state: codec::FrameState = codec::FrameState::LeftMsb,
             frame: codec::QueueType = [0; 4],
             usb_to_codec_consumer,
-            debug_pin
+            i2s_debug_pin
         ],
         shared = [
             ff_counter,
-            i2s_transmit_driver,
+            i2s_driver,
             exti
         ]
     )]
     fn i2s_transmit_task(mut cx: i2s_transmit_task::Context) {
-        // Toggle the debug pin for measuring rate of the interrupt.
-        // This rate should be 192 kHz
-        cx.local.debug_pin.toggle();
+        // Reset the buffer by pulling values up to half the
+        // buffer size
+        if cx.local.usb_to_codec_consumer.len() > cx.local.usb_to_codec_consumer.capacity() - cx.local.usb_to_codec_consumer.capacity() / 10 {
+            cx.local.i2s_debug_pin.toggle();
+
+            #[cfg(debug_assertions)]
+            defmt::dbg!("USB queue to full. Force pulling values");
+
+            for _i in 0..cx.local.usb_to_codec_consumer.capacity() / 2 {
+                cx.local.usb_to_codec_consumer.dequeue();
+            }
+        }
 
         // Increment the ff counter by one, which is then used to
         // measure the rate that samples are consumed
@@ -287,31 +294,9 @@ mod app {
             cx.local.frame, 
             // cx.local.usb_to_codec_consumer, 
             cx.local.usb_to_codec_consumer,
-            cx.shared.i2s_transmit_driver, 
+            cx.shared.i2s_driver, 
             cx.shared.exti
         );
-    }
-
-    // Look i2s_transmit WS line for (re) synchronisation
-    #[task(
-        priority = 3, 
-        binds = EXTI4, 
-        shared = [
-            i2s_transmit_driver,
-            exti
-        ])]
-    fn exti4(cx: exti4::Context) {
-        let i2s_transmit_driver = cx.shared.i2s_transmit_driver;
-        let exti = cx.shared.exti;
-        let ws_pin = i2s_transmit_driver.ws_pin_mut();
-        ws_pin.clear_interrupt_pending_bit();
-        // yes, in this case we already know that pin is high, but some other exti can be triggered
-        // by several pins
-        if ws_pin.is_high() {
-            ws_pin.disable_interrupt(exti);
-            i2s_transmit_driver.write_data_register(0);
-            i2s_transmit_driver.enable();
-        }
     }
 
     /// This interrupt will trigger every time a USB request is sent
@@ -336,6 +321,7 @@ mod app {
             usb_device,
             usb_audio,
             usb_to_codec_producer,
+            usb_debug_pin,
             ff: FfCounter = FfCounter::ZERO,
             sample_counter: usize = 0,
             frame_counter: u32 = 0,
@@ -360,6 +346,19 @@ mod app {
 
                 let buf = sample_rate_to_buffer(*cx.local.ff);
                 cx.local.usb_audio.write_sync_rate(&buf).ok();
+            }
+
+            // Reset the buffer by pushing values up to half the
+            // buffer size
+            if cx.local.usb_to_codec_producer.len() < cx.local.usb_to_codec_producer.capacity() / 10 {
+                cx.local.usb_debug_pin.toggle();
+
+                #[cfg(debug_assertions)]
+                defmt::dbg!("USB queue to empty. Force pushing values");
+
+                for _i in 0..((cx.local.usb_to_codec_producer.capacity() / 2) - cx.local.usb_to_codec_producer.len()) {
+                    cx.local.usb_to_codec_producer.enqueue([0, 0, 0, 0]).ok();
+                }
             }
 
             let mut buf = [0u8; USB_BUFFER_SIZE];

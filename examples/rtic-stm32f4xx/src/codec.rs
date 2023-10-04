@@ -1,21 +1,21 @@
 use crate::codecs::cs4272;
 
 use cortex_m::asm;
+use hal::i2s::stm32_i2s_v12x::transfer::{Master, Transmit, Philips};
 use stm32f4xx_hal as hal;
-// use hal::gpio::Edge;
-use hal::i2s::stm32_i2s_v12x::driver::*;
+use hal::i2s::stm32_i2s_v12x::driver;
 use hal::i2s::I2s;
-use hal::pac::{EXTI, SPI2, SPI3};
+use hal::pac::{EXTI, SPI3};
 use hal::prelude::*;
 use hal::i2c::I2c;
-use hal::gpio::{NoPin, Edge};
 
 use heapless::spsc::*;
 
 use defmt_brtt as _;
 
-pub type I2sMasterDriver = I2sDriver<I2s<SPI2>, Master, Receive, Philips>;
-pub type I2sTransmitDriver = I2sDriver<I2s<SPI3>, Slave, Transmit, Philips>;
+// pub type I2sMasterDriver = I2sDriver<I2s<SPI2>, Master, Receive, Philips>;
+// pub type I2sTransmitDriver = I2sDriver<I2s<SPI3>, Slave, Transmit, Philips>;
+pub type I2sDriver = driver::I2sDriver<I2s<SPI3>, Master, Transmit, Philips>;
 
 pub const QUEUE_SIZE: usize = 512;
 pub type QueueType = [u16; 4];
@@ -35,6 +35,7 @@ impl Default for FrameState {
     }
 }
 pub struct Codec<'a> {
+    pub sample_rate: u32,
     pub syscfg: &'a mut hal::syscfg::SysCfg,
     pub clocks: &'a hal::rcc::Clocks,
     pub exti:   &'a mut EXTI,
@@ -44,16 +45,13 @@ pub struct Codec<'a> {
     pub rst_pin: &'a mut hal::gpio::Pin<'A', 7, hal::gpio::Output>,
     pub i2c_scl: hal::gpio::Pin<'B', 8>,
     pub i2c_sda: hal::gpio::Pin<'B', 9>,
-    pub i2s_lrck_master: hal::gpio::Pin<'B', 12>,
-    pub i2s_clk_master: hal::gpio::Pin<'B', 13>,
-    pub i2s_mck_master: hal::gpio::Pin<'C', 6>,
-    pub i2s_data_master: hal::gpio::Pin<'B', 15>,
-    pub i2s_lrck_transmit: hal::gpio::Pin<'A', 4>,
-    pub i2s_clk_transmit: hal::gpio::Pin<'C', 10>,
-    pub i2s_data_transmit: hal::gpio::Pin<'C', 12>
+    pub i2s_mclk: hal::gpio::Pin<'C', 7>,
+    pub i2s_lrck: hal::gpio::Pin<'A', 4>,
+    pub i2s_clk: hal::gpio::Pin<'C', 10>,
+    pub i2s_data: hal::gpio::Pin<'C', 12>
 }
 
-pub fn init(codec: Codec) -> (I2sMasterDriver, I2sTransmitDriver)
+pub fn init(codec: Codec) -> I2sDriver
 {
     // Pin groups
     let i2c_pins = (
@@ -61,41 +59,28 @@ pub fn init(codec: Codec) -> (I2sMasterDriver, I2sTransmitDriver)
         codec.i2c_sda
     );
 
-    let i2s_master_pins = (
-        codec.i2s_lrck_master,
-        codec.i2s_clk_master,
-        codec.i2s_mck_master,
-        codec.i2s_data_master
+    let i2s_pins = (
+        codec.i2s_lrck,
+        codec.i2s_clk,
+        codec.i2s_mclk,
+        codec.i2s_data
     );
-
-    let i2s_transmit_pins = (
-        codec.i2s_lrck_transmit,
-        codec.i2s_clk_transmit,
-        NoPin::new(),
-        codec.i2s_data_transmit
-    );
-
 
     // Interface objects
     let mut i2c = I2c::new(codec.i2c1, i2c_pins, 100.kHz(), codec.clocks);
-    let i2s_master = I2s::new( codec.spi2, i2s_master_pins, codec.clocks);
-    let i2s_transmit = I2s::new(codec.spi3, i2s_transmit_pins, codec.clocks);
+    let i2s = I2s::new(codec.spi3, i2s_pins, codec.clocks);
 
-    // Setup Master device for configurations codec
-    let i2s_master_config = I2sDriverConfig::new_master()
+    let i2s_config = driver::I2sDriverConfig::new_master()
         .receive()
         .standard(Philips)
-        .data_format(DataFormat::Data24Channel32)
+        .data_format(driver::DataFormat::Data24Channel32)
         .master_clock(true)
-        .request_frequency(12_000);
-        
-    // Setup for the slave transmit
-    let i2s_transmit_config = i2s_master_config.transmit().to_slave();
+        .request_frequency(codec.sample_rate);
 
-    let mut i2s_master_driver = I2sDriver::new(i2s_master, i2s_master_config);
-    defmt::info!("Actual sample rate is {}", i2s_master_driver.sample_rate());
+    let mut i2s_driver = driver::I2sDriver::new(i2s, i2s_config);
+    defmt::info!("Actual sample rate is {}", i2s_driver.sample_rate());
     
-    i2s_master_driver.enable();
+    i2s_driver.enable();
 
     // Reset the codec
     defmt::info!("Reset codec");
@@ -115,34 +100,23 @@ pub fn init(codec: Codec) -> (I2sMasterDriver, I2sTransmitDriver)
         asm::nop();
     }
 
-    // Use the slave transmit config to setup a transmit driver
-    let mut i2s_transmit_driver = I2sDriver::new(i2s_transmit, i2s_transmit_config);
-
-    // Create an interrupt for the master receive device
-    // i2s_master_driver.set_rx_interrupt(true);
-    // i2s_master_driver.set_error_interrupt(true);
-
-    // Set interrupts for the slave transmit device
-    i2s_transmit_driver.set_tx_interrupt(true);
-    i2s_transmit_driver.set_error_interrupt(true);
-
-    // Set up an interrupt on WS pin of the transmit device
-    let ws_pin = i2s_transmit_driver.ws_pin_mut();
-    ws_pin.make_interrupt_source(codec.syscfg);
-    ws_pin.trigger_on_edge(codec.exti, Edge::Rising);
-    // We will enable i2s_transmit in interrupt
-    ws_pin.enable_interrupt(codec.exti);
-
     // Wait until device has booted
     for _ in 0..10000 {
         asm::nop();
     }
 
-    // Clear overrun flag
-    i2s_master_driver.read_data_register();
-    i2s_master_driver.status();
+    // Reconfigure the I2S driver to transmit mode
+    let mut i2s_driver = i2s_driver.reconfigure(i2s_config.transmit());
+    i2s_driver.enable();
 
-    (i2s_master_driver, i2s_transmit_driver)
+    // Set interrupts for the slave transmit device
+    i2s_driver.set_tx_interrupt(true);
+
+    // Clear overrun flag
+    i2s_driver.write_data_register(0);
+    i2s_driver.status();
+
+    i2s_driver
 }
 
 // Cycle through the different frame states (LeftMsb -> LeftLsb -> RightMsb -> RightLsb ->
@@ -152,15 +126,15 @@ pub fn i2s_transmit(
     frame_state: &mut FrameState, 
     frame: &mut QueueType, 
     usb_to_codec_consumer: &mut Consumer<QueueType, QUEUE_SIZE>, 
-    i2s_transmit_driver: &mut I2sTransmitDriver, 
-    exti: &mut EXTI
+    i2s_transmit_driver: &mut I2sDriver, 
+    _exti: &mut EXTI
 ) {
     let status = i2s_transmit_driver.status();
     // it's better to write data first to avoid to trigger udr flag
     if status.txe() {
         let data;
         match (*frame_state, status.chside()) {
-            (FrameState::LeftMsb, Channel::Left) => {
+            (FrameState::LeftMsb, driver::Channel::Left) => {
                 *frame = match usb_to_codec_consumer.dequeue() {
                     Some(frame) => {
                         // defmt::info!("Pulled data from USB");
@@ -175,15 +149,15 @@ pub fn i2s_transmit(
                 data = frame[0];
                 *frame_state = FrameState::LeftLsb;
             }
-            (FrameState::LeftLsb, Channel::Left) => {
+            (FrameState::LeftLsb, driver::Channel::Left) => {
                 data = frame[1];
                 *frame_state = FrameState::RightMsb;
             }
-            (FrameState::RightMsb, Channel::Right) => {
+            (FrameState::RightMsb, driver::Channel::Right) => {
                 data = frame[2];
                 *frame_state = FrameState::RightLsb;
             }
-            (FrameState::RightLsb, Channel::Right) => {
+            (FrameState::RightLsb, driver::Channel::Right) => {
                 data = frame[3];
                 *frame_state = FrameState::LeftMsb;
             }
@@ -194,15 +168,5 @@ pub fn i2s_transmit(
             }
         }
         i2s_transmit_driver.write_data_register(data);
-    }
-    if status.fre() {
-        defmt::warn!("i2s_transmit Frame error");
-        i2s_transmit_driver.disable();
-        i2s_transmit_driver.ws_pin_mut().enable_interrupt(exti);
-    }
-    if status.udr() {
-        // defmt::dbg!("i2s_transmit udr");
-        i2s_transmit_driver.status();
-        i2s_transmit_driver.write_data_register(0);
     }
 }
