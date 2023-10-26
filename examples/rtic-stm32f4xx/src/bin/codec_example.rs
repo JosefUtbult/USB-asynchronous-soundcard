@@ -10,6 +10,7 @@ use rtic_stm32f4xx::{
 use stm32f4xx_hal as hal;
 use usb_asynchronous_soundcard::*;
 
+#[allow(unused_imports)]
 use hal::gpio::{Pin, Output, ReadPin};
 use hal::prelude::*;
 use hal::otg_fs::{UsbBus, USB};
@@ -43,6 +44,7 @@ const SYNC_RATE: u32 = 256;
 /// Sample rate that everything should run at. Note that if this rate
 /// is to high, the blocking time of the USB transmission will cause
 /// the I2S transmission to drop samples
+// const SAMPLE_RATE: u32 = 12_000;
 const SAMPLE_RATE: u32 = 24_000;
 
 /// This is the size allocated to the USB buffer. As this example
@@ -252,6 +254,9 @@ mod app {
         )
     }
 
+    /// This interrupt will trigger every time the SPI buffer has been
+    /// transmitted to the CODEC. This should occur at a rate of
+    /// `24 * 4` = 96 kHz.
     #[task(
         priority = 3,
         binds = SPI3,
@@ -338,8 +343,11 @@ mod app {
             if *cx.local.frame_counter >= SYNC_RATE {
                 *cx.local.frame_counter = 0;
 
+                // Check if the appropriate number of SOF transfers has occured.
+                // Then calculate the sample rate by dividing the number of 
+                // clock cycles since last reading by 1024
                 cx.shared.ff_counter.lock(|ff_counter| {
-                    let factor: FfCounter = FfCounter::ONE * SYNC_RATE;
+                    let factor: FfCounter = FfCounter::ONE * 1024;
                     *cx.local.ff = *ff_counter / factor;
                     *ff_counter %= factor;
                 });

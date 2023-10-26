@@ -79,7 +79,7 @@ pub fn codec_setup(i2c: &mut I2c<hal::pac::I2C1>) {
         // R              00   MCLK/LRCK (FS) = 256 -> 4MHz/256 = 15.6kHz
         // M/S            1    Slave Mode
         // DAC_DIF        001  I2S, up to 24 bit
-        0b00_00_0_001,
+        0b00_00_1_001,
         
         // 02, DAC Control
         // AMUTE          0    Auto Mute Enable (mute on consecutive 0 or-1)

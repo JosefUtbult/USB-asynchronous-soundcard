@@ -1,7 +1,8 @@
 use crate::codecs::cs4272;
 
 use cortex_m::asm;
-use hal::i2s::stm32_i2s_v12x::transfer::{Master, Transmit, Philips};
+#[allow(unused_imports)]
+use hal::i2s::stm32_i2s_v12x::transfer::{Master, Slave, Transmit, Philips};
 use stm32f4xx_hal as hal;
 use hal::i2s::stm32_i2s_v12x::driver;
 use hal::i2s::I2s;
@@ -13,9 +14,8 @@ use heapless::spsc::*;
 
 use defmt_brtt as _;
 
-// pub type I2sMasterDriver = I2sDriver<I2s<SPI2>, Master, Receive, Philips>;
-// pub type I2sTransmitDriver = I2sDriver<I2s<SPI3>, Slave, Transmit, Philips>;
-pub type I2sDriver = driver::I2sDriver<I2s<SPI3>, Master, Transmit, Philips>;
+pub type I2sDriver = driver::I2sDriver<I2s<SPI3>, Slave, Transmit, Philips>;
+// pub type I2sDriver = driver::I2sDriver<I2s<SPI3>, Master, Transmit, Philips>;
 
 pub const QUEUE_SIZE: usize = 512;
 pub type QueueType = [u16; 4];
@@ -70,15 +70,15 @@ pub fn init(codec: Codec) -> I2sDriver
     let mut i2c = I2c::new(codec.i2c1, i2c_pins, 100.kHz(), codec.clocks);
     let i2s = I2s::new(codec.spi3, i2s_pins, codec.clocks);
 
-    let i2s_config = driver::I2sDriverConfig::new_master()
+    let i2s_config = driver::I2sDriverConfig::new_slave()
         .receive()
         .standard(Philips)
-        .data_format(driver::DataFormat::Data24Channel32)
-        .master_clock(true)
-        .request_frequency(codec.sample_rate);
+        .data_format(driver::DataFormat::Data24Channel32);
+        // .master_clock(true)
+        // .request_frequency(codec.sample_rate);
 
     let mut i2s_driver = driver::I2sDriver::new(i2s, i2s_config);
-    defmt::info!("Actual sample rate is {}", i2s_driver.sample_rate());
+    // defmt::info!("Actual sample rate is {}", i2s_driver.sample_rate());
     
     i2s_driver.enable();
 
@@ -95,10 +95,6 @@ pub fn init(codec: Codec) -> I2sDriver
     }
 
     cs4272::codec_setup(&mut i2c);
-
-    for _ in 0..10000 {
-        asm::nop();
-    }
 
     // Wait until device has booted
     for _ in 0..10000 {

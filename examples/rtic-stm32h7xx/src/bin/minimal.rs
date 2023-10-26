@@ -260,13 +260,16 @@ mod app {
         // Audio Class device
         if cx.local.usb_device.poll(&mut [cx.local.usb_audio]) {
 
+            // Check if the appropriate number of SOF transfers has occured.
+            // Then calculate the sample rate by dividing the number of 
+            // clock cycles since last reading by 1024
             *cx.local.frame_counter += 1;
             *cx.local.frames_since_sync += 1;
             if *cx.local.frame_counter >= SYNC_RATE {
                 *cx.local.frame_counter = 0;
 
                 cx.shared.ff_counter.lock(|ff_counter| {
-                    let factor: FfCounter = FfCounter::ONE * SYNC_RATE; 
+                    let factor: FfCounter = FfCounter::ONE * 1024; 
                     *cx.local.ff = *ff_counter / factor;
                     *ff_counter %= factor;
                 });
